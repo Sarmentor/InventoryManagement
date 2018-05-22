@@ -1,0 +1,404 @@
+extensions [csv array table]
+breed [clients client]
+clients-own [
+  beliefs
+  intentions
+  stocksaux
+  stocks
+  nround
+  nrefuses
+  nrefusesaux
+  incoming-queue
+  counter
+  asking
+  tick-buy
+  
+  ]
+
+;;; Creates stohastically a client on one of the streets according to a probability.
+;;; The latter is set by a slider on the simulation environment. 
+;;; This give a model in which clients appear at different execution times
+to setup-clients
+     create-clients nclients [
+       set color yellow
+       rand-xy-co-on-road
+       set beliefs []
+       set intentions []
+       set stocksaux csv:from-file (word "Client_DB" (random 3) ".csv")
+       csv:to-file (word "Client_DB_" who ".csv") stocksaux
+       set stocks csv:from-file (word "Client_DB_" who ".csv")
+       set incoming-queue []
+       set asking []
+       set nround 1
+       set nrefuses nclients - 1
+       set nrefusesaux 0
+       set tick-buy 0
+       add-intention "control-stocks" "false"
+       add-intention "simulate-selling" "false"
+       set counter 100
+       ]
+end
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Top Level Procedure (called by Observer to run the experiment
+to clients-behaviour
+   ;control-stocks
+   ;simulate-selling
+   execute-intentions
+end
+
+;;; simulate selling
+to simulate-selling
+   ;;;randomly sell n items
+   let nsold random 3
+   ;;;randomly select one item to sell (no header line in stocks file)
+   let index_list (random length stocks)
+   if index_list = 0 [set index_list 1]
+   let old-list item index_list stocks
+   ;;;current stock value
+   let value item 1 old-list
+   ;;;replace stock value for new stock value
+   ;;;and saves to file
+   set stocks replace-subitem-2 index_list 1 stocks (value - nsold)
+   csv:to-file (word "Client_DB_" who ".csv") stocks
+   add-intention "control-stocks" "true"
+end
+
+;;; Control Stocks 
+to control-stocks
+  print "Inside: CONTROL-STOCKS"
+  file-open (word "Client_DB_" who ".csv")
+  
+  while [ not file-at-end? ] [
+    let row csv:from-row file-read-line
+    ifelse length row = 1[
+       file-close
+       stop
+      ][
+       show (word "Row of DB of client " who " :" row)    
+       if (item 1 row) <=  (item 2 row) [
+        simulate-buying (item 0 row) (round((item 3 row - item 1 row) / 2)) item 4 row
+       ]
+      ]
+  ]
+  file-close
+end
+
+;;;simulate buying
+;;;asks for internal provider
+;;;if no other agents have enough stock to provide...
+;;;tries to buy from external providers
+to simulate-buying [item-id qty min_price]
+  print "Inside: SIMULATE-BUYING"
+  set tick-buy ticks
+  ifelse internal-trade = true [
+  set color blue
+  ask-item-to-other-clients item-id qty min_price
+  ][
+  set color green
+  find-a-seller item-id qty min_price
+  ]
+end
+
+;;; Ask item to other agents
+to ask-item-to-other-clients[item-id qty min_price]
+ print "Inside: ask-item-to-other-clients"
+ set asking add-content (list "dear clients: item needed" item-id qty min_price) create-message "cfp-client"
+ broadcast-to clients asking who
+ add-intention "collect-client-proposals" timeout_expired cfp-deadline
+ evaluate-client-proposals-and-send-replies item-id qty min_price
+end
+
+;;; Collecting Proposals
+to collect-client-proposals
+  
+  print "Inside: collect-client-proposals"
+  let msg 0
+  let performative 0
+while [not empty? incoming-queue]
+  [
+   set msg get-message 
+   set performative get-performative msg
+   if performative = "propose-from-client" [record-client-proposal msg]
+   if performative = "accept-proposal-client" [
+     update-stock msg
+     ]
+   if performative = "cfp-client" [evaluate-cfp-from-other-clients msg]
+   if performative = "refuse" [
+      set nrefusesaux nrefusesaux + 1
+      if nrefusesaux = nrefuses[
+        let item-id item 1 get-content asking
+        let qty item 2 get-content asking
+        let actual_min_price item 3 get-content asking
+        set nrefusesaux 0
+        ifelse [color] of turtle who = yellow [
+          set color green
+          find-a-seller item-id qty actual_min_price
+        ][
+          do-nothing
+        ]
+       ]
+     ]
+   ]
+end
+
+;;; Collecting Proposals
+to collect-proposals
+  
+  print "Inside: collect-proposals"
+  let msg 0
+  let performative 0
+ 
+ while [not empty? incoming-queue]
+  [
+   ;show (word "Incoming-Queue: " incoming-queue)
+   set msg get-message
+   set performative get-performative msg
+   if performative = "propose" [record-proposal msg]
+   if performative = "success" [
+     set color yellow
+     let price item 2 get-content msg
+     set mean-buying-price ((((internal-buy-counter + external-buy-counter) * mean-buying-price) + price)/(internal-buy-counter + external-buy-counter + 1) )
+     set external-buy-counter external-buy-counter + 1
+     set int-ext-ratio (internal-buy-counter / external-buy-counter)
+     set mean-time-to-provide-items ((((internal-buy-counter + external-buy-counter - 1) * mean-time-to-provide-items) + (ticks - tick-buy))/(internal-buy-counter + external-buy-counter))
+     update-stock msg
+     ] 
+   ]
+  
+end
+
+to wait-for-messages
+  set counter counter - 1   ;decrement-timer
+   
+  ifelse counter = 0 
+    [
+      reset-count-down
+      set color yellow
+    ]
+    [
+      add-intention "do-nothing" timeout_expired 10 stop
+      ]    
+end
+
+to reset-count-down   
+  set counter 100 
+end
+
+to evaluate-cfp-from-other-clients[msg]
+   print "Inside: evaluate-cfp-from-other-clients"
+   let item-id item 1 get-content msg
+   let qty item 2 get-content msg
+   answer-item-to-other-clients item-id qty msg
+end
+
+;;; Ask item to other agents
+to answer-item-to-other-clients[item-id qty msg]
+   print "Inside: answer-item-to-other-clients"
+   let index_list position item-id map first stocks
+   let list-old item index_list stocks
+   let available item 1 list-old - item 2 list-old
+   let price item 4 list-old
+   ifelse available > qty [
+     send add-content (list item-id available price) create-reply "propose-from-client" msg
+     ] 
+   [
+    refuse-proposal-2 msg
+     ]
+end
+
+
+to-report replace-subitem-2[index1 index2 lists value]
+  print "Inside: replace-subitem-2"
+  let old-sublist item index1 lists
+  report replace-item index1 lists (replace-item index2 old-sublist value)
+end
+
+;;; Plan to find a seller (carefull reverse order)
+to find-a-seller[item-id qty actual_min_price]
+  print "Inside: find-a-seller"
+  ;;;let asking add-content (list "dear seller: item needed" item-id qty actual_min_price) create-message "cfp"
+  send-cfp-to-agents item-id qty actual_min_price
+  add-intention "collect-proposals" timeout_expired cfp-deadline
+  evaluate-proposals-and-send-replies item-id qty
+end
+
+;;; sending a call for proposals to all sellers
+to send-cfp-to-agents[item-id qty actual_min_price]
+  print "Inside: send-cfp-to-agents"
+  broadcast-to sellers add-content (list "dear seller: item needed" item-id qty actual_min_price) create-message "cfp" who
+  while [[color] of turtle who = green]
+  [
+    wait-for-messages
+    ]
+  
+end
+
+
+;;; records beliefs of type [proposal senderID content]
+to record-proposal[msg]
+  print "Inside: record-proposal"
+  ;show (word "Recording Belief of type proposal!!!")
+  add-belief (list "proposal" get-sender msg get-content msg) 
+end
+
+;;; records beliefs of type [proposal senderID content]
+to record-client-proposal[msg]
+  print "Inside: record-client-proposal"
+  ;show (word "Recording Belief of type proposal from clients!!!")
+  add-belief (list "proposal-from-clients" get-sender msg get-content msg) 
+end
+
+;;; Evaluates proposals stored as beliefs
+;;; reverse auction implemented
+to evaluate-client-proposals-and-send-replies[item-id qty min_price]
+  print "Inside: evaluate-client-proposals-and-send-replies"
+  let best 0
+  let proposals 0
+  
+  set proposals filter [first item 2 ? = item-id] beliefs-of-type "proposal-from-clients"
+  if empty? proposals [
+    show "no proposals from clients"
+    add-intention "do-nothing" timeout_expired 10
+    set color yellow
+    stop
+    ] ;; no proposals arrived, so find a seller.
+
+  foreach proposals [remove-belief ?] ;;; clear beliefs
+  show proposals
+  set best first sort-by [(item 2 (item 2 ?1)) <= (item 2 (item 2  ?2))] proposals ;;; select the best (cheapest)
+  show word "This is the best proposal: " best
+  let answer add-content (list "Please send me the items my friend" item-id qty) create-message "accept-proposal-client"
+  send add-receiver item 1 best answer
+  let price item 2 item 2 best
+  set mean-buying-price ((((internal-buy-counter + external-buy-counter) * mean-buying-price) + price)/(internal-buy-counter + external-buy-counter + 1) )
+  set internal-buy-counter internal-buy-counter + 1
+  if external-buy-counter != 0[
+    set int-ext-ratio (internal-buy-counter / external-buy-counter)
+  ] 
+  set mean-time-to-provide-items ((((internal-buy-counter + external-buy-counter - 1) * mean-time-to-provide-items) + (ticks - tick-buy))/(internal-buy-counter + external-buy-counter))       
+  set color yellow
+  update-stock answer
+end
+
+;;; Evaluates proposals stored as beliefs
+;;; reverse auction implemented
+to evaluate-proposals-and-send-replies[item-id qty]
+  print "Inside: evaluate-proposals-and-send-replies"
+  let best 0
+  let proposals 0
+  
+  ;;show beliefs
+  set proposals filter [first item 2 ? = item-id] beliefs-of-type "proposal"
+  if empty? proposals [
+       show "no proposals" 
+       add-intention "do-nothing" timeout_expired 10 stop
+    ] ;; no proposals arrived, so do nothing.
+
+  set best first sort-by [item 2 (item 2 ?1) <= item 2 (item 2  ?2)] proposals ;;; select the best (cheapest)
+  ;;if there is still more than one seller in auction
+  ;;continues to send lowest price
+  ;;;ifelse length proposals > 1 and nround <= auction_rounds
+  ifelse nround <= auction_rounds
+  [
+    set nround nround + 1
+    show (word "Auction in round: " nround " for client " who)
+    foreach proposals [remove-belief ?] ;;; clear beliefs
+    set asking add-content (list "dear seller: item needed" item-id qty item 2 (item 2 best)) create-message "cfp"
+    set color green  ;;; Indication showing that we are waiting.
+    find-a-seller item-id qty item 2 (item 2 best)   
+  ]
+  [
+    set nround 1
+    show (word "Finished auction for client " who " !!")
+    show (word "This is the best proposal: " best)
+    ;;when there is only one it sends response to seller
+    ;;if there is a draw it randomly selects one seller
+    send add-receiver item 1 best add-content (list "You have the best price" best who) create-message "accept-proposal"
+    foreach proposals [remove-belief ?] ;;; clear beliefs
+    ]
+  
+  
+end
+
+
+to update-stock[msg]
+  print "Inside: update-stock"
+  show msg
+  if (first get-content msg = "Please send me the items my friend") or (get-performative msg = "success") [
+      if get-performative msg = "success" [
+         let item-id first get-content msg
+         let qty item 1 get-content msg
+         let index_list position item-id map first stocks
+         show item-id
+      show index_list
+      ;show stocks
+      let old-list item index_list stocks
+      ;show old-list
+      ;;;current stock value
+      let value item 1 old-list
+      ;;;replace stock value for new stock value
+      ;;;and saves to file
+      set stocks replace-subitem-2 index_list 1 stocks (value + qty)
+      show stocks
+      csv:to-file (word "Client_DB_" who ".csv") stocks
+      add-intention "control-stocks" "true"
+      ;add-intention "do-nothing" timeout_expired 10
+      ;stop
+        ]
+      
+      if (first get-content msg = "Please send me the items my friend")[
+         let item-id item 1 get-content msg
+         let qty item 2 get-content msg
+         let index_list position item-id map first stocks
+         show item-id
+      show index_list
+      ;show stocks
+      let old-list item index_list stocks
+      ;show old-list
+      ;;;current stock value
+      let value item 1 old-list
+      ;;;replace stock value for new stock value
+      ;;;and saves to file
+      set stocks replace-subitem-2 index_list 1 stocks (value + qty)
+      show stocks
+      csv:to-file (word "Client_DB_" who ".csv") stocks
+      add-intention "control-stocks" "true"
+      ;add-intention "do-nothing" timeout_expired 10
+      ;stop
+        ]
+   ]
+      
+   if (get-performative msg = "accept-proposal-client") [
+      let item-id item 1 get-content msg
+      let qty item 2 get-content msg      
+      let index_list position item-id map first stocks
+      ;show item-id
+      ;show index_list
+      ;show stocks
+      let old-list item index_list stocks
+      ;show old-list
+      ;;;current stock value
+      let value item 1 old-list
+      ;;;replace stock value for new stock value
+      ;;;and saves to file
+      set stocks replace-subitem-2 index_list 1 stocks (value - qty)
+      csv:to-file (word "Client_DB_" who ".csv") stocks
+      add-intention "control-stocks" "true"
+      ;add-intention "do-nothing" timeout_expired 10
+    ]
+   
+end
+
+;;; send a refusal message to a cfp
+to refuse-proposal-2[msg]
+ print "Inside: refuse-proposal-2"
+ send add-content "Sorry, not enough items" create-reply "refuse" msg
+end
+
+;;;;;;;;;;;; end of Client Agent
+
+
+
+
+

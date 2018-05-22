@@ -1,0 +1,112 @@
+extensions [csv array table]
+breed [sellers seller]
+sellers-own [
+ beliefs
+ intentions
+ products
+ fileofproducts
+ incoming-queue
+ ]
+
+;;; Creates the number of sellers defined by the appropriate slider in the menu.
+;;; takes special care to place the sellers on available positions on the streets (rand-xy-co-on-road)
+to setup-sellers
+   create-sellers no-of-sellers [   
+      set shape "car"
+      set color blue
+      set heading 0
+      set beliefs []
+      set intentions []
+      set incoming-queue []
+      set fileofproducts (word "Provider_DB_" random 5 ".csv")
+      set products csv:from-file fileofproducts
+      add-intention "listen-to-messages" "false"
+      rand-xy-co-on-road
+ ]
+  
+end
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; The seller Agent
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Agent has sensors, effectors (actions) and a behaviour (reactive)
+;;; The agent behaviour encoded as reactive rules, and only one rule is executed at each run.
+to seller-behaviour
+   execute-intentions
+end
+
+to-report replace-subitem [index1 index2 lists value]
+  show index1
+  show index2
+  show lists
+  show value
+  let old-sublist item index1 lists
+  report replace-item index1 lists (replace-item index2 old-sublist value)
+end
+
+;;; Basic Plan listen to messages and wonder around....
+to listen-to-messages
+  let msg 0
+  let performative 0
+while [not empty? incoming-queue]
+  [
+   set msg get-message
+   set performative get-performative msg
+   if performative = "cfp" [evaluate-and-reply-cfp msg] 
+   if performative = "accept-proposal" [simulate-selling-to-client msg]
+   if performative = "reject-proposal" [do-nothing]
+   ] 
+end
+
+to evaluate-and-reply-cfp [msg]
+   let price item 3 get-content msg
+   let item-id item 1 get-content msg
+   let qty item 2 get-content msg
+   let product_index position item-id map first products
+   ;show item-id
+   ;;;show product_index
+   let productdata item product_index products
+   ;show productdata
+   let min_price item 2 productdata
+   ;show price
+   ifelse price < min_price
+   [
+     fail-proposal msg
+     add-intention "listen-to-messages" "false"
+   ]
+   [
+     ;show (word "seller " who " sent a new proposal to message: " msg) 
+     send add-content (list item-id qty min_price) create-reply "propose" msg
+     add-intention "listen-to-messages" "false"
+   ]
+end
+
+;;; send a refusal message to a cfp
+to refuse-proposal [msg]
+ send add-content "busy" create-reply "refuse" msg
+end
+
+to fail-proposal [msg]
+ send add-content "sorry" create-reply "failure" msg
+end
+
+;;; simulate selling
+;;; sellers have a maximum price and a minimum price
+;;; for each item - the stock is infinite
+;;; update item price if transaction is ok
+to simulate-selling-to-client [msg]
+  let index_list position first item 2 item 1 get-content msg map first products
+  set products replace-subitem index_list 1 products item 2 item 2 item 1 get-content msg
+  csv:to-file (word fileofproducts "_END.csv") products
+  end-selling msg
+end
+
+;;;finishes transaction with client
+;;;sends thank you message!
+;;;it is true either for selling or abortion of negotiation
+to end-selling [msg]
+   send add-content item 2 item 1 get-content msg create-reply "success" msg
+end
+
+
+
