@@ -1,0 +1,8 @@
+item_id,stock,min_stock,max_stock,buy_price
+pao,120,25,120,0.12
+leite 1lt,100,10,100,0.54
+bolachas,50,15,50,0.8
+cerveja,250,12,250,0.35
+fraldas,15,5,15,1.7
+peixe,20,2,20,2.75
+carne,30,5,30,2.1

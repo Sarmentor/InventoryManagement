@@ -1,0 +1,8 @@
+item_id,price,min_price_unit,max_price_unit
+pao,0.12,0.1,0.15
+leite 1lt,0.54,0.45,0.65
+bolachas,0.7,0.5,0.8
+cerveja,0.35,0.27,0.45
+fraldas,1.5,1.3,1.9
+peixe,2.5,2.2,3.2
+carne,2.25,1.95,2.73
